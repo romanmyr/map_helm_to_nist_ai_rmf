@@ -4,9 +4,10 @@ Reads HELM v0.4.0 schema.json and groups_metadata.json, downloads the NIST AI RM
 playbook, and produces a weighted many-to-many mapping from HELM metric groups to
 NIST RMF indicators based on topic-keyword alignment.
 
-Dependencies: stdlib only (json, urllib, pathlib, datetime)
+Dependencies: stdlib only (json, urllib, pathlib, datetime, csv)
 """
 
+import csv
 import json
 import urllib.request
 import urllib.error
@@ -24,6 +25,7 @@ HELM_DIR = PROJECT_DIR.parent / "helm_download" / "data" / "v0.4.0"
 NIST_PLAYBOOK_URL = "https://airc.nist.gov/docs/playbook.json"
 NIST_PLAYBOOK_PATH = DATA_DIR / "playbook.json"
 OUTPUT_PATH = DATA_DIR / "helm_to_nist_mapping.json"
+CSV_OUTPUT_PATH = DATA_DIR / "helm_to_nist_mapping.csv"
 
 # ---------------------------------------------------------------------------
 # HELM metric group -> NIST topic keyword mapping & weight tiers
@@ -215,6 +217,163 @@ def build_mapping(
     return mappings
 
 
+# ---------------------------------------------------------------------------
+# HELM metric group -> representative metric names for status detection
+# ---------------------------------------------------------------------------
+# Maps each HELM metric group to the stat names and perturbation names used
+# in runs.json to determine whether runs produced results (count > 0) or
+# failed (count == 0).
+HELM_GROUP_STAT_KEYS = {
+    "accuracy": {"name": "exact_match"},
+    "calibration": {"name": "ece_10_bin"},
+    "calibration_detailed": {"name": "ece_10_bin"},
+    "robustness": {"name": None, "perturbation_name": "robustness"},
+    "robustness_detailed": {"name": None, "perturbation_name": "typos"},
+    "fairness": {"name": None, "perturbation_name": "fairness"},
+    "fairness_detailed": {"name": None, "perturbation_name": "dialect"},
+    "bias": {"name": "bias_metric", "match": "prefix"},
+    "toxicity": {"name": "toxic_frac"},
+    "efficiency": {"name": "inference_denoised_runtime"},
+    "efficiency_detailed": {"name": "inference_runtime"},
+    "summarization_metrics": {"name": "summac"},
+    "copyright_metrics": {"name": "longest_common_prefix_length"},
+    "disinformation_metrics": {"name": "self_bleu"},
+    "bbq_metrics": {"name": "bbq_metric_ambiguous_bias"},
+    "classification_metrics": {"name": "classification_macro_f1"},
+}
+
+
+def _stat_matches_group(stat_name: str, perturbation: str, keys: dict) -> bool:
+    """Check if a stat entry matches a HELM group's stat key definition."""
+    expected_name = keys.get("name")
+    expected_pert = keys.get("perturbation_name", "")
+    match_mode = keys.get("match", "exact")
+
+    if expected_pert:
+        return perturbation == expected_pert
+    if not expected_name:
+        return False
+    if perturbation:
+        return False
+    if match_mode == "prefix":
+        return stat_name.startswith(expected_name)
+    return stat_name == expected_name
+
+
+def compute_per_model_signal_status(runs: list) -> tuple[dict[tuple[str, str], str], list[str]]:
+    """Determine pass/fail status per (model, HELM metric group) from runs.json.
+
+    Returns:
+        status: dict mapping (model_name, group_name) -> "passed" | "failed"
+        models: sorted list of unique model names
+    """
+    from collections import defaultdict
+
+    # (model, group) -> {success: int, total: int}
+    success_counts: dict[tuple[str, str], int] = defaultdict(int)
+    total_counts: dict[tuple[str, str], int] = defaultdict(int)
+    all_models: set[str] = set()
+
+    for run in runs:
+        model = run["run_spec"]["adapter_spec"]["model"]
+        all_models.add(model)
+
+        for stat in run.get("stats", []):
+            stat_name = stat["name"]["name"]
+            perturbation = stat["name"].get("perturbation_name", "")
+            count = stat.get("count", 0)
+
+            for group, keys in HELM_GROUP_STAT_KEYS.items():
+                if _stat_matches_group(stat_name, perturbation, keys):
+                    key = (model, group)
+                    total_counts[key] += 1
+                    if count > 0:
+                        success_counts[key] += 1
+
+    models = sorted(all_models)
+    status = {}
+    for model in models:
+        for group in HELM_GROUP_STAT_KEYS:
+            key = (model, group)
+            if total_counts[key] == 0 or success_counts[key] == 0:
+                status[key] = "failed"
+            else:
+                status[key] = "passed"
+
+    return status, models
+
+
+# ---------------------------------------------------------------------------
+# Descriptive HELM signal labels for the CSV output
+# ---------------------------------------------------------------------------
+# Describes what each HELM metric group measures, used in the
+# "stanford HELM signal" CSV column.
+HELM_SIGNAL_LABELS = {
+    "accuracy": "Accuracy metrics",
+    "calibration": "Calibration scores",
+    "calibration_detailed": "Calibration scores",
+    "robustness": "Prompt resilience",
+    "robustness_detailed": "Prompt resilience",
+    "fairness": "Bias/fairness indicators",
+    "fairness_detailed": "Bias/fairness indicators",
+    "bias": "Bias/fairness indicators",
+    "toxicity": "Toxicity metrics",
+    "efficiency": "Inference efficiency",
+    "efficiency_detailed": "Inference efficiency",
+    "summarization_metrics": "Summarization quality",
+    "copyright_metrics": "Copyright/memorization metrics",
+    "disinformation_metrics": "Disinformation generation metrics",
+    "bbq_metrics": "Bias/fairness indicators",
+    "classification_metrics": "Classification accuracy",
+}
+
+
+def write_csv(
+    mappings: list[dict],
+    signal_status: dict[tuple[str, str], str],
+    models: list[str],
+) -> None:
+    """Write the mapping to a CSV with columns:
+    Model, Category, weight, stanford HELM signal, NIST AI RMF
+
+    One row per (model, category, NIST indicator) combination.
+    - weight: percentage of total weight across all categories
+    - stanford HELM signal: descriptive label of what HELM measures
+    - NIST AI RMF: uppercase function type, or 'Do Not Use' if model failed that signal
+    """
+    total_weight = sum(
+        WEIGHT_TIER_VALUES[m["weight_tier"]] for m in mappings
+    )
+
+    rows = []
+    for model in models:
+        for m in mappings:
+            category = m["helm_display_name"]
+            tier_value = WEIGHT_TIER_VALUES[m["weight_tier"]]
+            weight_pct = f"{(tier_value / total_weight) * 100:.1f}%"
+            helm_signal = HELM_SIGNAL_LABELS.get(
+                m["helm_category"], m["helm_display_name"]
+            )
+            is_failed = signal_status.get((model, m["helm_category"])) == "failed"
+
+            if not m["nist_indicators"]:
+                nist_label = "Do Not Use" if is_failed else "N/A"
+                rows.append([model, category, weight_pct, helm_signal, nist_label])
+                continue
+
+            for indicator in m["nist_indicators"]:
+                nist_label = "Do Not Use" if is_failed else indicator["type"].upper()
+                rows.append([model, category, weight_pct, helm_signal, nist_label])
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with open(CSV_OUTPUT_PATH, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            ["Model", "Category", "weight", "stanford HELM signal", "NIST AI RMF"]
+        )
+        writer.writerows(rows)
+
+
 def print_summary(mappings: list[dict]) -> None:
     """Print a summary table of the mapping."""
     print("\n" + "=" * 90)
@@ -260,13 +419,30 @@ def main() -> None:
     playbook = download_nist_playbook()
     print(f"  Playbook has {len(playbook)} entries")
 
-    # Step 3: Build mapping
-    print("\n[3/5] Matching HELM metric groups to NIST indicators via topic keywords...")
+    # Step 3: Load HELM runs for per-model signal status
+    print("\n[3/7] Loading HELM runs for per-model signal status...")
+    runs_path = HELM_DIR / "runs.json"
+    if runs_path.exists():
+        runs = load_json(runs_path)
+        print(f"  Loaded {len(runs)} runs from runs.json")
+        signal_status, models = compute_per_model_signal_status(runs)
+        print(f"  Found {len(models)} models")
+        passed = sum(1 for s in signal_status.values() if s == "passed")
+        failed = sum(1 for s in signal_status.values() if s == "failed")
+        print(f"  Per-model signal status: {passed} passed, {failed} failed")
+    else:
+        runs = []
+        signal_status = {}
+        models = []
+        print("  runs.json not found, assuming all signals passed")
+
+    # Step 4: Build mapping
+    print("\n[4/7] Matching HELM metric groups to NIST indicators via topic keywords...")
     mappings = build_mapping(helm_groups, playbook)
     print(f"  Produced {len(mappings)} category mappings")
 
-    # Step 4: Save output
-    print("\n[4/5] Saving mapping to disk...")
+    # Step 5: Save JSON output
+    print("\n[5/7] Saving JSON mapping to disk...")
     output = {
         "metadata": {
             "helm_version": "v0.4.0",
@@ -286,8 +462,13 @@ def main() -> None:
         json.dump(output, f, indent=2)
     print(f"  Saved to {OUTPUT_PATH}")
 
-    # Step 5: Print summary
-    print("\n[5/5] Summary")
+    # Step 6: Save CSV output
+    print("\n[6/7] Saving CSV mapping to disk...")
+    write_csv(mappings, signal_status, models)
+    print(f"  Saved to {CSV_OUTPUT_PATH}")
+
+    # Step 7: Print summary
+    print("\n[7/7] Summary")
     print_summary(mappings)
 
 
