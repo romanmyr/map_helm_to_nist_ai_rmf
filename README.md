@@ -60,19 +60,22 @@ The CSV has one row per (model, category, NIST indicator) combination:
 | Category | HELM metric category | Accuracy, Fairness, Toxicity |
 | weight | Category importance as % of total | 7.6%, 4.5% |
 | stanford HELM signal | What HELM measures for this category | Accuracy metrics, Bias/fairness indicators, Prompt resilience |
-| NIST AI RMF | NIST function type or failure flag | GOVERN, MAP, MEASURE, MANAGE, Do Not Use |
+| NIST AI RMF | Specific NIST indicator or failure flag | GOVERN 1.2, MAP 1.1, MEASURE 2.5, Do Not Use |
+
+Each passed row maps to a specific NIST playbook indicator (e.g., GOVERN 1.2, MEASURE 2.11). Failed categories produce a single "Do Not Use" row per model/category.
 
 Sample rows:
 
 ```csv
 Model,Category,weight,stanford HELM signal,NIST AI RMF
-openai/text-davinci-003,Accuracy,7.6%,Accuracy metrics,GOVERN
-openai/text-davinci-003,Bias,7.6%,Bias/fairness indicators,MEASURE
+openai/text-davinci-003,Accuracy,7.6%,Accuracy metrics,GOVERN 1.2
+openai/text-davinci-003,Accuracy,7.6%,Accuracy metrics,MAP 1.1
+openai/text-davinci-003,Accuracy,7.6%,Accuracy metrics,MEASURE 2.5
 openai/text-davinci-003,Robustness,7.6%,Prompt resilience,Do Not Use
 eleutherai/pythia-1b-v0,Bias,7.6%,Bias/fairness indicators,Do Not Use
 ```
 
-When a model has no successful HELM results for a metric group, the NIST AI RMF column is set to "Do Not Use" instead of a NIST function type.
+When a model has no successful HELM results for a metric group, the NIST AI RMF column is set to "Do Not Use" instead of a specific indicator.
 
 ## JSON Output Format
 
