@@ -356,14 +356,12 @@ def write_csv(
             )
             is_failed = signal_status.get((model, m["helm_category"])) == "failed"
 
-            if not m["nist_indicators"]:
-                nist_label = "Do Not Use" if is_failed else "N/A"
-                rows.append([model, category, weight_pct, helm_signal, nist_label])
+            if is_failed or not m["nist_indicators"]:
+                rows.append([model, category, weight_pct, helm_signal, "Do Not Use"])
                 continue
 
             for indicator in m["nist_indicators"]:
-                nist_label = "Do Not Use" if is_failed else indicator["type"].upper()
-                rows.append([model, category, weight_pct, helm_signal, nist_label])
+                rows.append([model, category, weight_pct, helm_signal, indicator["title"].upper()])
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with open(CSV_OUTPUT_PATH, "w", newline="", encoding="utf-8") as f:
