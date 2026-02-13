@@ -4,11 +4,11 @@ Maps [HELM Classic](https://crfm.stanford.edu/helm/) benchmark metric categories
 
 ## What It Does
 
-This tool reads HELM v0.4.0 benchmark metadata and the NIST AI RMF playbook, then produces a weighted many-to-many mapping between HELM metric groups (accuracy, fairness, bias, toxicity, etc.) and NIST RMF indicators (GOVERN, MAP, MEASURE, MANAGE) based on topic-keyword alignment.
+This tool reads HELM v0.4.0 benchmark metadata and the NIST AI RMF playbook, then produces a weighted many-to-many mapping between HELM metric groups (accuracy, fairness, bias, toxicity, etc.) and NIST RMF indicators (GOVERN, MAP, MEASURE, MANAGE) based on topic-keyword alignment. Results are computed per model using HELM run data, with failed signals marked as "Do Not Use".
 
 ## Data Sources
 
-- **HELM Classic v0.4.0** — `schema.json` (metric groups) and `groups_metadata.json` from the [HELM benchmark](https://crfm.stanford.edu/helm/)
+- **HELM Classic v0.4.0** — `schema.json` (metric groups), `groups_metadata.json`, and `runs.json` (per-model results) from the [HELM benchmark](https://crfm.stanford.edu/helm/)
 - **NIST AI RMF Playbook** — 72 entries downloaded from `https://airc.nist.gov/docs/playbook.json`
 
 ## Usage
@@ -22,13 +22,16 @@ python map_helm_to_nist.py
 
 On first run, the NIST playbook is downloaded and cached to `data/playbook.json`. Subsequent runs use the cached copy.
 
-Output is written to `data/helm_to_nist_mapping.json`.
+Outputs:
+- `data/helm_to_nist_mapping.json` — full mapping with metadata and weights
+- `data/helm_to_nist_mapping.csv` — per-model results with 5 columns
 
 ## Mapping Strategy
 
 1. **Keyword matching** — Each HELM metric group is associated with NIST playbook topics (e.g., fairness → "Fairness and Bias", robustness → "Secure and Resilient" + "Safety")
 2. **Topic search** — For each HELM group, all 72 NIST playbook entries are searched for matching `Topic[]` tags, producing a many-to-many mapping
 3. **Weight normalization** — Each HELM category has a risk tier (high=1.0, medium=0.6). The per-indicator weight = `tier_value / num_matched_indicators`
+4. **Per-model status** — For each of the 70 models in `runs.json`, each metric group is checked for successful results (stat count > 0). Failed signals produce "Do Not Use" in the NIST column
 
 ## HELM Categories Mapped
 
@@ -47,7 +50,31 @@ Output is written to `data/helm_to_nist_mapping.json`.
 | BBQ metrics | high | Fairness and Bias |
 | Classification metrics | medium | Validity and Reliability |
 
-## Output Format
+## CSV Output
+
+The CSV has one row per (model, category, NIST indicator) combination:
+
+| Column | Description | Example values |
+|---|---|---|
+| Model | HELM model identifier | `openai/text-davinci-003`, `anthropic/stanford-online-all-v4-s3` |
+| Category | HELM metric category | Accuracy, Fairness, Toxicity |
+| weight | Category importance as % of total | 7.6%, 4.5% |
+| stanford HELM signal | What HELM measures for this category | Accuracy metrics, Bias/fairness indicators, Prompt resilience |
+| NIST AI RMF | NIST function type or failure flag | GOVERN, MAP, MEASURE, MANAGE, Do Not Use |
+
+Sample rows:
+
+```csv
+Model,Category,weight,stanford HELM signal,NIST AI RMF
+openai/text-davinci-003,Accuracy,7.6%,Accuracy metrics,GOVERN
+openai/text-davinci-003,Bias,7.6%,Bias/fairness indicators,MEASURE
+openai/text-davinci-003,Robustness,7.6%,Prompt resilience,Do Not Use
+eleutherai/pythia-1b-v0,Bias,7.6%,Bias/fairness indicators,Do Not Use
+```
+
+When a model has no successful HELM results for a metric group, the NIST AI RMF column is set to "Do Not Use" instead of a NIST function type.
+
+## JSON Output Format
 
 ```json
 {
@@ -88,5 +115,6 @@ map_helm_to_nist_ai_rmf/
 ├── README.md
 └── data/                  # Created at runtime (git-ignored)
     ├── playbook.json      # Cached NIST AI RMF playbook
-    └── helm_to_nist_mapping.json  # Output mapping
+    ├── helm_to_nist_mapping.json  # JSON output (category-level)
+    └── helm_to_nist_mapping.csv   # CSV output (per-model)
 ```
