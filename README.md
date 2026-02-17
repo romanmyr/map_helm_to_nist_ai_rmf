@@ -50,6 +50,49 @@ Outputs:
 | BBQ metrics | high | Fairness and Bias |
 | Classification metrics | medium | Validity and Reliability |
 
+## Weight Calculation
+
+### Weight Tiers
+
+Each HELM category is assigned a risk tier based on how safety-critical it is:
+
+| Tier | Value | Rationale | Categories |
+|---|---|---|---|
+| **high** | 1.0 | Directly measures safety, fairness, or core reliability — failure poses immediate risk | Accuracy, Robustness, Fairness, Bias, Toxicity, Disinformation, BBQ |
+| **medium** | 0.6 | Important for trustworthiness but failure is less immediately dangerous | Calibration, Efficiency, Summarization, Copyright, Classification |
+
+### Per-Indicator Weight (`mapping_weight`)
+
+Each HELM category's tier value is split evenly across all NIST indicators it maps to:
+
+```
+mapping_weight = tier_value / num_matched_indicators
+```
+
+For example, Accuracy (high = 1.0) matches 8 NIST indicators, so each gets `1.0 / 8 = 0.125`.
+
+### Category Weight (`weight` column)
+
+The `weight` column in the CSV shows each category's tier value as a percentage of the total tier value across all 16 categories:
+
+```
+weight = (tier_value / sum_of_all_tier_values) × 100
+```
+
+The total across all 16 categories is 13.2 (9 high × 1.0 + 7 medium × 0.6). A high-tier category gets `1.0 / 13.2 = 7.6%`, a medium-tier gets `0.6 / 13.2 = 4.5%`.
+
+### Type Weight (`type_weight` column)
+
+The `type_weight` shows how much of the total possible assessment weight a given NIST function type (GOVERN, MAP, MEASURE, MANAGE) accounts for. It is computed as:
+
+```
+type_weight = (sum of mapping_weight for all passed indicators of this type) / sum_of_all_tier_values × 100
+```
+
+**Global (JSON):** Uses all categories (nothing failed), so GOVERN = 18.0%, MAP = 25.8%, MEASURE = 53.7%, MANAGE = 2.5%.
+
+**Per-model (CSV):** Only includes categories that passed for that model. A model with failed categories will have lower type_weight percentages because the denominator stays the same (13.2) but the numerator shrinks. This means type_weight percentages for a given model may not sum to 100%.
+
 ## CSV Output
 
 The CSV has one row per (model, category, NIST indicator) combination:
