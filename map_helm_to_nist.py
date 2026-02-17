@@ -172,6 +172,7 @@ def match_nist_indicators(playbook: list, keywords: list[str]) -> list[dict]:
                 matched.append({
                     "title": entry.get("title", ""),
                     "type": entry.get("type", ""),
+                    "nist_type": entry.get("type", "").upper(),
                     "category": entry.get("category", ""),
                     "description": entry.get("description", ""),
                     "topics": topics,
@@ -185,6 +186,8 @@ def build_mapping(
     playbook: list,
 ) -> list[dict]:
     """Build the HELM -> NIST mapping with computed weights."""
+    from collections import defaultdict
+
     mappings = []
     for group_name, topic_config in HELM_TO_NIST_TOPIC_MAP.items():
         if group_name not in helm_groups:
@@ -214,7 +217,21 @@ def build_mapping(
             "nist_indicators": nist_indicators,
         })
 
-    return mappings
+    # Compute type_weight: rolled-up total of mapping_weight per NIST type
+    # across all categories
+    type_weight_totals: dict[str, float] = defaultdict(float)
+    for m in mappings:
+        for indicator in m["nist_indicators"]:
+            nist_type = indicator["nist_type"]
+            type_weight_totals[nist_type] += indicator["mapping_weight"]
+
+    # Round and attach type_weight to each indicator
+    type_weights = {t: round(w, 4) for t, w in type_weight_totals.items()}
+    for m in mappings:
+        for indicator in m["nist_indicators"]:
+            indicator["type_weight"] = type_weights[indicator["nist_type"]]
+
+    return mappings, type_weights
 
 
 # ---------------------------------------------------------------------------
@@ -328,21 +345,52 @@ HELM_SIGNAL_LABELS = {
 }
 
 
+def _compute_per_model_type_weights(
+    mappings: list[dict],
+    signal_status: dict[tuple[str, str], str],
+    models: list[str],
+) -> dict[tuple[str, str], float]:
+    """Compute rolled-up type weight per (model, NIST type).
+
+    For each model, sums the mapping_weight of all passed indicators grouped
+    by NIST type (GOVERN, MAP, MEASURE, MANAGE).
+    """
+    from collections import defaultdict
+
+    totals: dict[tuple[str, str], float] = defaultdict(float)
+    for model in models:
+        for m in mappings:
+            is_failed = signal_status.get((model, m["helm_category"])) == "failed"
+            if is_failed:
+                continue
+            for indicator in m["nist_indicators"]:
+                nist_type = indicator["nist_type"]
+                totals[(model, nist_type)] += indicator["mapping_weight"]
+
+    return {k: round(v, 4) for k, v in totals.items()}
+
+
 def write_csv(
     mappings: list[dict],
     signal_status: dict[tuple[str, str], str],
     models: list[str],
 ) -> None:
     """Write the mapping to a CSV with columns:
-    Model, Category, weight, stanford HELM signal, NIST AI RMF
+    Model, Category, weight, stanford HELM signal, NIST AI RMF, type, type_weight
 
     One row per (model, category, NIST indicator) combination.
     - weight: percentage of total weight across all categories
     - stanford HELM signal: descriptive label of what HELM measures
-    - NIST AI RMF: uppercase function type, or 'Do Not Use' if model failed that signal
+    - NIST AI RMF: specific NIST indicator, or 'Do Not Use' if model failed
+    - type: NIST function type (GOVERN, MAP, MEASURE, MANAGE)
+    - type_weight: rolled-up total mapping_weight for this NIST type for this model
     """
     total_weight = sum(
         WEIGHT_TIER_VALUES[m["weight_tier"]] for m in mappings
+    )
+
+    model_type_weights = _compute_per_model_type_weights(
+        mappings, signal_status, models
     )
 
     rows = []
@@ -357,18 +405,27 @@ def write_csv(
             is_failed = signal_status.get((model, m["helm_category"])) == "failed"
 
             if is_failed or not m["nist_indicators"]:
-                rows.append([model, category, weight_pct, helm_signal, "Do Not Use"])
+                rows.append([
+                    model, category, weight_pct, helm_signal,
+                    "Do Not Use", "", "",
+                ])
                 continue
 
             for indicator in m["nist_indicators"]:
-                rows.append([model, category, weight_pct, helm_signal, indicator["title"].upper()])
+                nist_type = indicator["nist_type"]
+                type_wt = model_type_weights.get((model, nist_type), 0.0)
+                rows.append([
+                    model, category, weight_pct, helm_signal,
+                    indicator["title"].upper(), nist_type, type_wt,
+                ])
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with open(CSV_OUTPUT_PATH, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(
-            ["Model", "Category", "weight", "stanford HELM signal", "NIST AI RMF"]
-        )
+        writer.writerow([
+            "Model", "Category", "weight", "stanford HELM signal",
+            "NIST AI RMF", "type", "type_weight",
+        ])
         writer.writerows(rows)
 
 
@@ -436,8 +493,9 @@ def main() -> None:
 
     # Step 4: Build mapping
     print("\n[4/7] Matching HELM metric groups to NIST indicators via topic keywords...")
-    mappings = build_mapping(helm_groups, playbook)
+    mappings, type_weights = build_mapping(helm_groups, playbook)
     print(f"  Produced {len(mappings)} category mappings")
+    print(f"  Type weights: {type_weights}")
 
     # Step 5: Save JSON output
     print("\n[5/7] Saving JSON mapping to disk...")
@@ -452,6 +510,7 @@ def main() -> None:
                 "importance and normalized by match count."
             ),
         },
+        "type_weights": type_weights,
         "mappings": mappings,
     }
 
