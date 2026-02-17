@@ -225,8 +225,15 @@ def build_mapping(
             nist_type = indicator["nist_type"]
             type_weight_totals[nist_type] += indicator["mapping_weight"]
 
-    # Round and attach type_weight to each indicator
-    type_weights = {t: round(w, 4) for t, w in type_weight_totals.items()}
+    # Convert to percentages and attach to each indicator
+    grand_total = sum(type_weight_totals.values())
+    if grand_total > 0:
+        type_weights = {
+            t: f"{round((w / grand_total) * 100, 1)}%"
+            for t, w in type_weight_totals.items()
+        }
+    else:
+        type_weights = {t: "0.0%" for t in type_weight_totals}
     for m in mappings:
         for indicator in m["nist_indicators"]:
             indicator["type_weight"] = type_weights[indicator["nist_type"]]
@@ -367,7 +374,17 @@ def _compute_per_model_type_weights(
                 nist_type = indicator["nist_type"]
                 totals[(model, nist_type)] += indicator["mapping_weight"]
 
-    return {k: round(v, 4) for k, v in totals.items()}
+    # Convert to percentages
+    per_model_totals: dict[str, float] = {}
+    for (model, nist_type), val in totals.items():
+        per_model_totals.setdefault(model, 0.0)
+        per_model_totals[model] += val
+
+    result = {}
+    for (model, nist_type), val in totals.items():
+        grand = per_model_totals[model]
+        result[(model, nist_type)] = round((val / grand) * 100, 1) if grand > 0 else 0.0
+    return result
 
 
 def write_csv(
@@ -414,9 +431,10 @@ def write_csv(
             for indicator in m["nist_indicators"]:
                 nist_type = indicator["nist_type"]
                 type_wt = model_type_weights.get((model, nist_type), 0.0)
+                type_wt_pct = f"{type_wt}%"
                 rows.append([
                     model, category, weight_pct, helm_signal,
-                    indicator["title"].upper(), nist_type, type_wt,
+                    indicator["title"].upper(), nist_type, type_wt_pct,
                 ])
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)

@@ -24,7 +24,7 @@ On first run, the NIST playbook is downloaded and cached to `data/playbook.json`
 
 Outputs:
 - `data/helm_to_nist_mapping.json` — full mapping with metadata and weights
-- `data/helm_to_nist_mapping.csv` — per-model results with 5 columns
+- `data/helm_to_nist_mapping.csv` — per-model results with 7 columns
 
 ## Mapping Strategy
 
@@ -61,18 +61,22 @@ The CSV has one row per (model, category, NIST indicator) combination:
 | weight | Category importance as % of total | 7.6%, 4.5% |
 | stanford HELM signal | What HELM measures for this category | Accuracy metrics, Bias/fairness indicators, Prompt resilience |
 | NIST AI RMF | Specific NIST indicator or failure flag | GOVERN 1.2, MAP 1.1, MEASURE 2.5, Do Not Use |
+| type | NIST function type | GOVERN, MAP, MEASURE, MANAGE (empty for Do Not Use) |
+| type_weight | Rolled-up total mapping weight for this NIST type for this model, as % | 18.0%, 53.7% (empty for Do Not Use) |
 
-Each passed row maps to a specific NIST playbook indicator (e.g., GOVERN 1.2, MEASURE 2.11). Failed categories produce a single "Do Not Use" row per model/category.
+Each passed row maps to a specific NIST playbook indicator (e.g., GOVERN 1.2, MEASURE 2.11). Failed categories produce a single "Do Not Use" row per model/category with empty type and type_weight.
+
+The `type_weight` is the sum of `mapping_weight` across all categories that map to indicators of a given NIST type for a given model. It varies per model because failed categories don't contribute.
 
 Sample rows:
 
 ```csv
-Model,Category,weight,stanford HELM signal,NIST AI RMF
-openai/text-davinci-003,Accuracy,7.6%,Accuracy metrics,GOVERN 1.2
-openai/text-davinci-003,Accuracy,7.6%,Accuracy metrics,MAP 1.1
-openai/text-davinci-003,Accuracy,7.6%,Accuracy metrics,MEASURE 2.5
-openai/text-davinci-003,Robustness,7.6%,Prompt resilience,Do Not Use
-eleutherai/pythia-1b-v0,Bias,7.6%,Bias/fairness indicators,Do Not Use
+Model,Category,weight,stanford HELM signal,NIST AI RMF,type,type_weight
+openai/text-davinci-003,Accuracy,7.6%,Accuracy metrics,GOVERN 1.2,GOVERN,18.0%
+openai/text-davinci-003,Accuracy,7.6%,Accuracy metrics,MAP 1.1,MAP,25.8%
+openai/text-davinci-003,Accuracy,7.6%,Accuracy metrics,MEASURE 2.5,MEASURE,53.7%
+openai/text-davinci-003,Robustness,7.6%,Prompt resilience,Do Not Use,,
+eleutherai/pythia-1b-v0,Bias,7.6%,Bias/fairness indicators,Do Not Use,,
 ```
 
 When a model has no successful HELM results for a metric group, the NIST AI RMF column is set to "Do Not Use" instead of a specific indicator.
@@ -87,6 +91,12 @@ When a model has no successful HELM results for a metric group, the NIST AI RMF 
     "generated": "2026-02-13T...",
     "description": "..."
   },
+  "type_weights": {
+    "GOVERN": "18.0%",
+    "MAP": "25.8%",
+    "MEASURE": "53.7%",
+    "MANAGE": "2.5%"
+  },
   "mappings": [
     {
       "helm_category": "fairness",
@@ -98,10 +108,12 @@ When a model has no successful HELM results for a metric group, the NIST AI RMF 
         {
           "title": "MEASURE 2.11",
           "type": "Measure",
+          "nist_type": "MEASURE",
           "category": "MEASURE-2",
           "description": "...",
           "topics": ["Fairness and Bias", ...],
-          "mapping_weight": 0.125
+          "mapping_weight": 0.125,
+          "type_weight": "53.7%"
         }
       ]
     }
