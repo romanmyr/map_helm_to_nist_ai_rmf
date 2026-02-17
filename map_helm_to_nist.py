@@ -374,16 +374,15 @@ def _compute_per_model_type_weights(
                 nist_type = indicator["nist_type"]
                 totals[(model, nist_type)] += indicator["mapping_weight"]
 
-    # Convert to percentages
-    per_model_totals: dict[str, float] = {}
-    for (model, nist_type), val in totals.items():
-        per_model_totals.setdefault(model, 0.0)
-        per_model_totals[model] += val
+    # Convert to percentages using total possible weight as denominator
+    # so that failed categories reduce the percentage
+    grand_total = sum(
+        WEIGHT_TIER_VALUES[m["weight_tier"]] for m in mappings
+    )
 
     result = {}
     for (model, nist_type), val in totals.items():
-        grand = per_model_totals[model]
-        result[(model, nist_type)] = round((val / grand) * 100, 1) if grand > 0 else 0.0
+        result[(model, nist_type)] = round((val / grand_total) * 100, 1) if grand_total > 0 else 0.0
     return result
 
 
